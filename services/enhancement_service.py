@@ -13,14 +13,30 @@ def _stretch(channel):
     return np.rint((channel.astype(np.float32) - low) * (255.0 / (high - low))).clip(0, 255).astype(np.uint8)
 
 
-def _equalize(channel):
+def _equalize(channel, return_details=False):
     hist = np.bincount(channel.ravel(), minlength=256)
     cdf = hist.cumsum()
     cdf_min = int(cdf[cdf > 0][0])
     if cdf_min == channel.size:
-        return channel.copy()
-    lut = np.rint((cdf - cdf_min) * 255.0 / (channel.size - cdf_min)).clip(0, 255).astype(np.uint8)
-    return lut[channel]
+        lut = np.arange(256, dtype=np.uint8)
+        result = channel.copy()
+    else:
+        lut = np.rint((cdf - cdf_min) * 255.0 / (channel.size - cdf_min)).clip(0, 255).astype(np.uint8)
+        result = lut[channel]
+    if not return_details:
+        return result
+    details = {
+        "histogram": hist.tolist(),
+        "pdf": (hist.astype(np.float64) / channel.size).tolist(),
+        "cdf": (cdf.astype(np.float64) / channel.size).tolist(),
+        "lut": lut.tolist(),
+        "cdf_min": cdf_min / channel.size,
+        "total_pixels": int(channel.size),
+        "min": int(channel.min()),
+        "max": int(channel.max()),
+        "constant": cdf_min == channel.size,
+    }
+    return result, details
 
 
 def _odd_int(value, name, low, high):
@@ -32,7 +48,7 @@ def _odd_int(value, name, low, high):
     return value
 
 
-def enhance(image, method="stretch", params=None):
+def enhance(image, method="stretch", params=None, include_details=False):
     if method not in METHODS:
         raise ValueError("Phương pháp nâng ảnh không hợp lệ.")
     params = params or {}
@@ -44,11 +60,15 @@ def enhance(image, method="stretch", params=None):
         lab = cv2.cvtColor(source, cv2.COLOR_BGR2LAB)
         light = lab[:, :, 0]
 
+    details = None
     if method == "stretch":
         changed = _stretch(light)
         used = {"method": method, "input_min": int(light.min()), "input_max": int(light.max())}
     elif method == "equalize":
-        changed = _equalize(light)
+        if include_details:
+            changed, details = _equalize(light, return_details=True)
+        else:
+            changed = _equalize(light)
         used = {"method": method}
     elif method == "clahe":
         clip_limit = float(params.get("clip_limit", 2.0))
@@ -67,10 +87,11 @@ def enhance(image, method="stretch", params=None):
         used = {"method": method, "gamma": gamma}
 
     if lab is not None and np.array_equal(changed, light):
-        return source.copy(), used
+        result = source.copy()
+        return (result, used, details) if include_details else (result, used)
     if lab is None:
         result = changed
     else:
         lab[:, :, 0] = changed
         result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-    return result, used
+    return (result, used, details) if include_details else (result, used)

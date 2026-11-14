@@ -7,7 +7,8 @@ import io
 from services.enhancement_service import METHODS, enhance
 from services.evaluation_service import compare_metrics, mask_metrics
 from services.histogram_service import COLORSPACES, all_histograms, histogram_data, histogram_plot
-from services.image_service import ImageInputError, decode_image, detect_image_format, image_data_url, image_info, thumbnail
+from services.image_service import ImageInputError, decode_image, detect_image_format, image_data_url, image_info, intensity_gray, thumbnail
+from services.matching_service import histogram_match
 from services.segmentation_service import morphology, otsu
 
 images = Blueprint("images", __name__)
@@ -36,9 +37,15 @@ def analyze():
                 value = request.form[key]
                 params[key] = float(value) if key != "tile_size" else int(value)
         mode = request.form.get("mode", "binary")
-        enhanced, used_params = enhance(original, method, params)
+        if method == "equalize":
+            enhanced, used_params, equalization = enhance(original, method, params, include_details=True)
+        else:
+            enhanced, used_params = enhance(original, method, params)
+            equalization = None
         source_mask, source_otsu = otsu(original, mode)
         result_mask, result_otsu = otsu(enhanced, mode)
+        source_inverse = cv2.bitwise_not(source_mask)
+        result_inverse = cv2.bitwise_not(result_mask)
         morph_args = {"operation": request.form.get("morphology", "none"),
                       "size": int(request.form.get("kernel_size", 3)),
                       "shape": request.form.get("kernel_shape", "ellipse"),
@@ -62,11 +69,14 @@ def analyze():
             "original": image_data_url(thumbnail(original)), "enhanced": image_data_url(thumbnail(enhanced)),
             "mask_before": image_data_url(thumbnail(source_mask)), "mask_after": image_data_url(thumbnail(result_mask)),
             "mask_before_morph": image_data_url(thumbnail(source_post)), "mask_after_morph": image_data_url(thumbnail(result_post)),
+            "mask_before_inverse": image_data_url(thumbnail(source_inverse)), "mask_after_inverse": image_data_url(thumbnail(result_inverse)),
+            "grayscale_before": image_data_url(thumbnail(intensity_gray(original))),
             "otsu_before": source_otsu, "otsu_after": result_otsu,
             "mask_metrics_before": mask_metrics(source_mask), "mask_metrics_after": mask_metrics(result_mask),
             "stats_before": source_hist["gray"]["channels"]["Intensity"],
             "stats_after": result_hist["gray"]["channels"]["Intensity"],
             "histograms_before": source_hist, "histograms_after": result_hist,
+            "equalization": equalization,
             "variants": variants,
             "comparison": compare_metrics(source_hist["gray"]["channels"]["Intensity"], result_hist["gray"]["channels"]["Intensity"], source_otsu["threshold"], result_otsu["threshold"]),
             "warnings": (["Ảnh đồng nhất hoặc mask chỉ có tiền cảnh/hậu cảnh; kết quả Otsu có thể không hữu ích cho phân đoạn."] if source_otsu["degenerate"] or result_otsu["degenerate"] else []) + (["Kênh alpha được ghép trên nền trắng khi phân tích; ảnh tăng cường xuất ra không có độ trong suốt."] if original.ndim == 3 and original.shape[2] == 4 else []),
@@ -134,6 +144,56 @@ def export_histogram():
         return jsonify(ok=True, data={"image": plot})
     except (TypeError, ValueError) as exc:
         return jsonify(ok=False, error={"code": "invalid_histogram", "message": str(exc)}), 400
+
+
+@images.post("/api/match")
+def match_histogram():
+    source_upload = request.files.get("image")
+    reference_upload = request.files.get("reference")
+    if not source_upload or not source_upload.filename or not reference_upload or not reference_upload.filename:
+        return jsonify(ok=False, error={"code": "missing_image", "message": "Chọn cả ảnh nguồn và ảnh tham chiếu."}), 400
+    try:
+        max_pixels = current_app.config["MAX_IMAGE_PIXELS"]
+        max_dimension = current_app.config["MAX_IMAGE_DIMENSION"]
+        source = decode_image(source_upload.read(), source_upload.filename, max_pixels, max_dimension)
+        reference = decode_image(reference_upload.read(), reference_upload.filename, max_pixels, max_dimension)
+        matched, details = histogram_match(source, reference)
+        data = {
+            "source": image_data_url(thumbnail(source)),
+            "reference": image_data_url(thumbnail(reference)),
+            "matched": image_data_url(thumbnail(matched)),
+            "details": details,
+        }
+        return jsonify(ok=True, data=data)
+    except (ImageInputError, ValueError, cv2.error) as exc:
+        return jsonify(ok=False, error={"code": "invalid_input", "message": str(exc)}), 400
+    except Exception:
+        logger.exception("Histogram matching failed")
+        return jsonify(ok=False, error={"code": "matching_failed", "message": "Không thể khớp Histogram cho các ảnh đã chọn."}), 422
+
+
+@images.post("/api/export/match")
+def export_histogram_match():
+    source_upload = request.files.get("image")
+    reference_upload = request.files.get("reference")
+    if not source_upload or not source_upload.filename or not reference_upload or not reference_upload.filename:
+        return jsonify(ok=False, error={"code": "missing_image", "message": "Chọn cả ảnh nguồn và ảnh tham chiếu."}), 400
+    try:
+        max_pixels = current_app.config["MAX_IMAGE_PIXELS"]
+        max_dimension = current_app.config["MAX_IMAGE_DIMENSION"]
+        source = decode_image(source_upload.read(), source_upload.filename, max_pixels, max_dimension)
+        reference = decode_image(reference_upload.read(), reference_upload.filename, max_pixels, max_dimension)
+        matched, _details = histogram_match(source, reference)
+        ok, encoded = cv2.imencode(".png", matched)
+        if not ok:
+            raise ValueError("Không thể mã hóa ảnh Histogram Matching.")
+        return send_file(io.BytesIO(encoded.tobytes()), mimetype="image/png", as_attachment=True,
+                         download_name="histogram-matched.png", max_age=0)
+    except (ImageInputError, ValueError, cv2.error) as exc:
+        return jsonify(ok=False, error={"code": "invalid_input", "message": str(exc)}), 400
+    except Exception:
+        logger.exception("Matched image export failed")
+        return jsonify(ok=False, error={"code": "matching_export_failed", "message": "Không thể xuất ảnh đã khớp Histogram."}), 422
 
 
 @images.post("/api/export/image")

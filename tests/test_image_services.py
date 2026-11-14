@@ -5,9 +5,10 @@ import unittest
 import cv2
 import numpy as np
 
-from services.enhancement_service import enhance
+from services.enhancement_service import _equalize, enhance
 from services.histogram_service import all_histograms, histogram_data
 from services.image_service import ImageInputError, analysis_image, decode_image, intensity_gray
+from services.matching_service import histogram_match
 from services.segmentation_service import morphology, otsu
 
 
@@ -69,6 +70,53 @@ class ImageServiceTests(unittest.TestCase):
         image = np.full((8, 9), 83, dtype=np.uint8)
         self.assertTrue(np.array_equal(enhance(image, "stretch")[0], image))
         self.assertTrue(np.array_equal(enhance(image, "equalize")[0], image))
+
+    def test_equalization_details_match_the_applied_lut(self):
+        image = np.array([[0, 0, 7, 7, 200, 255]], dtype=np.uint8)
+        output, details = _equalize(image, return_details=True)
+        self.assertEqual(sum(details["histogram"]), image.size)
+        self.assertAlmostEqual(sum(details["pdf"]), 1.0)
+        self.assertTrue(np.all(np.diff(details["cdf"]) >= 0))
+        self.assertTrue(np.array_equal(output, np.asarray(details["lut"], np.uint8)[image]))
+        enhanced, _params, api_details = enhance(image, "equalize", include_details=True)
+        self.assertTrue(np.array_equal(output, enhanced))
+        self.assertEqual(api_details["lut"], details["lut"])
+        constant = np.full((3, 4), 73, np.uint8)
+        result, info = _equalize(constant, return_details=True)
+        self.assertTrue(np.array_equal(result, constant))
+        self.assertTrue(info["constant"])
+
+    def test_color_equalization_details_use_lab_luminance(self):
+        source = np.zeros((4, 6, 3), np.uint8)
+        source[:, :2] = (10, 40, 210)
+        source[:, 2:4] = (90, 130, 30)
+        source[:, 4:] = (190, 80, 120)
+        light = cv2.cvtColor(analysis_image(source), cv2.COLOR_BGR2LAB)[:, :, 0]
+        _result, _params, details = enhance(source, "equalize", include_details=True)
+        self.assertEqual(details["histogram"], np.bincount(light.ravel(), minlength=256).tolist())
+        self.assertEqual(details["total_pixels"], source.shape[0] * source.shape[1])
+
+    def test_histogram_matching_gray_sparse_constant_and_different_shapes(self):
+        source = np.array([[10, 10, 40], [80, 80, 200]], np.uint8)
+        reference = np.array([[100, 120], [220, 240], [250, 250]], np.uint8)
+        result, details = histogram_match(source, reference)
+        self.assertEqual(result.shape, source.shape)
+        self.assertTrue(np.all(np.diff(details["lut"]) >= 0))
+        self.assertEqual(len(details["source_histogram"]), 256)
+        self.assertEqual(details["reference_pixels"], reference.size)
+        self.assertLessEqual(details["mean_cdf_distance_after"], details["mean_cdf_distance_before"])
+        flat_result, flat_details = histogram_match(np.full((2, 3), 40, np.uint8), reference)
+        self.assertTrue(np.all(flat_result == reference.max()))
+        self.assertEqual(flat_details["source_min"], flat_details["source_max"])
+
+    def test_histogram_matching_color_uses_lab_l_channel(self):
+        source = np.zeros((8, 9, 3), np.uint8)
+        source[:, :4] = (30, 80, 180)
+        source[:, 4:] = (90, 150, 240)
+        reference = np.full((5, 6, 3), (30, 180, 70), np.uint8)
+        result, details = histogram_match(source, reference)
+        self.assertEqual(result.shape, source.shape)
+        self.assertEqual(details["channel"], "L (LAB)")
 
     def test_low_contrast_dark_bright_noisy_and_large_images(self):
         low = np.array([[100, 102, 105, 110]], np.uint8)
@@ -139,6 +187,8 @@ class ImageServiceTests(unittest.TestCase):
         reference_threshold = int(np.argmax(candidates))
         self.assertEqual(stats["threshold"], reference_threshold)
         self.assertAlmostEqual(stats["between_class_variance"], candidates[reference_threshold], places=10)
+        self.assertEqual(len(stats["variance_curve"]), 256)
+        self.assertAlmostEqual(max(stats["variance_curve"]), candidates[reference_threshold], places=10)
         self.assertAlmostEqual(stats["foreground_ratio"] + stats["background_ratio"], 1.0)
 
     def test_otsu_uniform_and_single_foreground_level_are_degenerate(self):

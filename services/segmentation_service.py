@@ -23,11 +23,19 @@ def otsu(image, mode="binary"):
     w0 = cumulative[int(threshold)]
     w1 = 1.0 - w0
     between = 0.0 if w0 <= 0 or w1 <= 0 else float(w0 * w1 * ((means[int(threshold)] / w0) - ((global_mean - means[int(threshold)]) / w1)) ** 2)
+    weights1 = 1.0 - cumulative
+    variances = np.zeros(256, dtype=np.float64)
+    valid = (cumulative > 0) & (weights1 > 0)
+    means0 = np.zeros(256, dtype=np.float64)
+    means1 = np.zeros(256, dtype=np.float64)
+    means0[valid] = means[valid] / cumulative[valid]
+    means1[valid] = (global_mean - means[valid]) / weights1[valid]
+    variances[valid] = cumulative[valid] * weights1[valid] * (means0[valid] - means1[valid]) ** 2
     foreground = float(np.count_nonzero(mask == 255) / total)
     degenerate = int(gray.min()) == int(gray.max()) or foreground in (0.0, 1.0)
     return mask, {"threshold": float(threshold), "between_class_variance": between,
                   "foreground_ratio": foreground, "background_ratio": 1.0 - foreground,
-                  "degenerate": degenerate}
+                  "degenerate": degenerate, "variance_curve": variances.tolist()}
 
 
 def morphology(mask, operation="none", size=3, shape="ellipse", iterations=1):
