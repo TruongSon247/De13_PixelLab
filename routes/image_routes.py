@@ -35,7 +35,10 @@ def analyze():
         for key in ("gamma", "clip_limit", "tile_size"):
             if key in request.form:
                 value = request.form[key]
-                params[key] = float(value) if key != "tile_size" else int(value)
+                try:
+                    params[key] = float(value) if key != "tile_size" else int(value)
+                except ValueError as exc:
+                    raise ValueError("Tham số số học không hợp lệ.") from exc
         mode = request.form.get("mode", "binary")
         if method == "equalize":
             enhanced, used_params, equalization = enhance(original, method, params, include_details=True)
@@ -59,7 +62,10 @@ def analyze():
             if variant == method:
                 variant_image, variant_params = enhanced, used_params
             else:
-                variant_image, variant_params = enhance(original, variant)
+                try:
+                    variant_image, variant_params = enhance(original, variant, params)
+                except ValueError:
+                    variant_image, variant_params = enhance(original, variant)
             variant_hist = histogram_data(variant_image, "gray")
             variants[variant] = {"preview": image_data_url(thumbnail(variant_image)),
                                  "params": variant_params, "stats": variant_hist["channels"]["Intensity"]}
@@ -204,17 +210,20 @@ def export_image():
     try:
         original = decode_image(upload.read(), upload.filename, current_app.config["MAX_IMAGE_PIXELS"], current_app.config["MAX_IMAGE_DIMENSION"])
         asset = request.form.get("asset", "enhanced")
+        params = {}
+        for key in ("gamma", "clip_limit", "tile_size"):
+            if key in request.form:
+                try:
+                    params[key] = int(request.form[key]) if key == "tile_size" else float(request.form[key])
+                except ValueError as exc:
+                    raise ValueError("Tham số số học không hợp lệ.") from exc
         if asset == "enhanced":
-            image, _ = enhance(original, request.form.get("method", "stretch"), {
-                key: (int(request.form[key]) if key == "tile_size" else float(request.form[key]))
-                for key in ("gamma", "clip_limit", "tile_size") if key in request.form})
+            image, _ = enhance(original, request.form.get("method", "stretch"), params)
         elif asset in {"mask_before", "mask_after", "mask_before_morph", "mask_after_morph"}:
             is_after = asset in {"mask_after", "mask_after_morph"}
             base = original
             if is_after:
-                base, _ = enhance(original, request.form.get("method", "stretch"), {
-                    key: (int(request.form[key]) if key == "tile_size" else float(request.form[key]))
-                    for key in ("gamma", "clip_limit", "tile_size") if key in request.form})
+                base, _ = enhance(original, request.form.get("method", "stretch"), params)
             image, _ = otsu(base, request.form.get("mode", "binary"))
             if asset.endswith("_morph"):
                 image = morphology(image, request.form.get("morphology", "none"),

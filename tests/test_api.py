@@ -40,6 +40,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(set(response.json["data"]["variants"]), {"stretch", "equalize", "clahe", "gamma"})
         self.assertIsNone(response.json["data"]["equalization"])
 
+    def test_gamma_variant_uses_submitted_parameters(self):
+        image = np.arange(256, dtype=np.uint8).reshape(16, 16)
+        response = self.post_image(image, method="equalize", gamma="2.0")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["data"]["variants"]["gamma"]["params"]["gamma"], 2.0)
+
+    def test_invalid_selected_numeric_parameter_has_localized_error(self):
+        image = np.arange(256, dtype=np.uint8).reshape(16, 16)
+        response = self.post_image(image, method="gamma", gamma="abc")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json["error"]["code"], "invalid_input")
+        self.assertEqual(response.json["error"]["message"], "Tham số số học không hợp lệ.")
+
     def test_histogram_matching_api_returns_comparison_data(self):
         source = np.arange(100, dtype=np.uint8).reshape(10, 10)
         reference = np.full((7, 11), 210, np.uint8)
