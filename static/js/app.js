@@ -8,7 +8,9 @@
   const morphNames = {none:'Không có', erode:'Co ảnh', dilate:'Giãn ảnh', open:'Mở ảnh', close:'Đóng ảnh'};
   const shapeNames = {ellipse:'elip', rect:'chữ nhật', cross:'dấu cộng'};
   const niceBytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(2)} MB`;
-  const f = n => Number(n).toLocaleString('vi-VN',{maximumFractionDigits:2});
+  const isValidNumber = n => n !== null && n !== undefined && n !== '' && Number.isFinite(Number(n));
+  const f = n => isValidNumber(n)
+    ? Number(n).toLocaleString('vi-VN',{maximumFractionDigits:2}) : '—';
   const img = (selector, url) => { $(selector).src = url; };
   let matchedReference = null, matchedDetails = null;
 
@@ -104,7 +106,27 @@
       const title=document.createElement('b');title.textContent=methodNames[key];const detail=document.createElement('small');detail.textContent=`${JSON.stringify(v.params)} · trung bình ${f(v.stats.mean)} · σ ${f(v.stats.std)}${key===d.method?' · đang dùng':''}`;
       card.append(preview,title,detail);card.addEventListener('click',()=>{$('#method').value=key;updateMethodControls();process(snapshot(),true)});variants.append(card);
     }
-    state.visible={};$('#space').value='gray';state.range=[0,255];renderChannelToggles();renderStats();drawHistogram();renderComparison();renderExplorers(d);
+    state.visible={};$('#space').value='gray';state.range=[0,255];renderChannelToggles();renderStats();drawHistogram();renderComparison();renderExplorers(d);renderExperiment(d);
+  }
+  function renderExperiment(d){
+    const exp=d.experimental_comparison||{},keys=['original','stretch','equalize'],labels={original:'Ảnh gốc',stretch:'Kéo giãn tương phản',equalize:'Cân bằng Histogram'};
+    const grid=$('#experiment-grid');grid.replaceChildren();
+    for(const key of keys){const item=exp[key],card=document.createElement('article');card.className='card experiment-card';
+      const title=document.createElement('h3');title.textContent=labels[key];card.append(title);
+      const image=document.createElement('img');image.alt=item?.image?labels[key]:'Không có dữ liệu ảnh hợp lệ';if(item?.image)image.src=item.image;card.append(image);
+      const histTitle=document.createElement('h4');histTitle.textContent='Biểu đồ Histogram xám · mức xám 0–255';card.append(histTitle);
+      const chart=document.createElement('canvas');chart.className='experiment-chart';chart.id='experiment-hist-'+key;chart.setAttribute('aria-label','Biểu đồ Histogram '+labels[key]+'; mức xám 0–255, trục dọc là số pixel');card.append(chart);
+      const axis=document.createElement('small');axis.className='hint';axis.textContent='X: mức xám 0–255 · Y: số pixel';card.append(axis);
+      const maskTitle=document.createElement('h4');maskTitle.textContent='Mặt nạ phân đoạn Otsu · '+(d.mode==='binary_inv'?'Nhị phân đảo':'Nhị phân');card.append(maskTitle);
+      const mask=document.createElement('img');mask.alt=item?.mask?'Mặt nạ Otsu · '+labels[key]:'Không có dữ liệu mặt nạ hợp lệ';mask.className='experiment-mask';if(item?.mask)mask.src=item.mask;card.append(mask);
+      const metrics=document.createElement('p');metrics.className='hint experiment-otsu-detail';const otsu=item?.otsu||{};metrics.textContent=`Ngưỡng phân đoạn ${f(otsu.threshold)} · Phương sai giữa lớp ${f(otsu.between_class_variance)} · Tiền cảnh ${f(isValidNumber(otsu.foreground_ratio)?Number(otsu.foreground_ratio)*100:null)}% · Hậu cảnh ${f(isValidNumber(otsu.background_ratio)?Number(otsu.background_ratio)*100:null)}%`;card.append(metrics);grid.append(card);
+      if(Array.isArray(item?.histogram)&&item.histogram.length===256&&item.histogram.every(isValidNumber))drawSeries(chart.id,[{values:item.histogram,color:key==='original'?'#ef9a50':key==='stretch'?'#25896a':'#6658d5'}]);
+      else {const unavailable=document.createElement('small');unavailable.className='hint';unavailable.textContent='Không có dữ liệu Histogram hợp lệ.';card.insertBefore(unavailable,axis)}
+    }
+    const statRows=[['Nhỏ nhất','min'],['Lớn nhất','max'],['Trung bình','mean'],['Trung vị','median'],['Độ lệch chuẩn','std'],['Dải động','dynamic_range'],['Entropy','entropy'],['Độ tương phản','contrast']];
+    const fill=(id,rows,group)=>{$(id).replaceChildren(...rows.map(([label,key,multiplier=1])=>{const tr=document.createElement('tr');[label,...keys.map(k=>isValidNumber(exp[k]?.[group]?.[key])?f(Number(exp[k][group][key])*multiplier):'—')].forEach((value,i)=>{const cell=document.createElement(i?'td':'th');cell.textContent=value;tr.append(cell)});return tr}))};
+    fill('#experiment-stats',statRows,'stats');
+    fill('#experiment-otsu',[['Ngưỡng phân đoạn','threshold'],['Phương sai giữa lớp','between_class_variance'],['Tiền cảnh (%)','foreground_ratio',100],['Hậu cảnh (%)','background_ratio',100]],'otsu');
   }
   function safeNumber(value){return value!==null&&value!==undefined&&Number.isFinite(Number(value))?Number(value):null}
   function renderComparison(){if(!state.data)return;const name=focusedChannel(),before=selectedSpaceData('before')?.channels[name],after=selectedSpaceData('after')?.channels[name];if(!before||!after)return;const metrics=[['Nhỏ nhất','min'],['Lớn nhất','max'],['Trung bình','mean'],['Trung vị','median'],['Độ lệch chuẩn','std'],['Dải động','dynamic_range'],['Entropy (bit)','entropy'],['Tương phản','contrast']];$('#comparison-rows').replaceChildren(...metrics.map(([label,key])=>{const a=safeNumber(before[key]),b=safeNumber(after[key]),delta=a===null||b===null?null:b-a,pct=a===null||b===null||a===0?null:(delta/a)*100;const tr=document.createElement('tr');[label,a===null?'—':f(a),b===null?'—':f(b),delta===null?'—':f(Math.abs(delta)),pct===null?(a===0&&delta!==null?'— (gốc = 0)':'—'):`${f(pct)}%`].forEach((value,i)=>{const cell=document.createElement(i===0?'th':'td');cell.textContent=value;tr.append(cell)});return tr}));const ob=state.data.otsu_before,oa=state.data.otsu_after;$('#threshold-before').textContent=f(ob.threshold);$('#threshold').textContent=f(oa.threshold);$('#variance-before').textContent=f(ob.between_class_variance);$('#variance').textContent=f(oa.between_class_variance);$('#fgbg-before').textContent=`${f(ob.foreground_ratio*100)}% / ${f(ob.background_ratio*100)}%`;$('#fgbg').textContent=`${f(oa.foreground_ratio*100)}% / ${f(oa.background_ratio*100)}%`}

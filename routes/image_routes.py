@@ -58,6 +58,7 @@ def analyze():
         source_hist = all_histograms(original)
         result_hist = all_histograms(enhanced)
         variants = {}
+        variant_images = {}
         for variant in sorted(METHODS):
             if variant == method:
                 variant_image, variant_params = enhanced, used_params
@@ -67,8 +68,23 @@ def analyze():
                 except ValueError:
                     variant_image, variant_params = enhance(original, variant)
             variant_hist = histogram_data(variant_image, "gray")
+            variant_images[variant] = variant_image
             variants[variant] = {"preview": image_data_url(thumbnail(variant_image)),
                                  "params": variant_params, "stats": variant_hist["channels"]["Intensity"]}
+        experiment = {}
+        for key, variant_image in (("original", original), ("stretch", variant_images["stretch"]),
+                                   ("equalize", variant_images["equalize"])):
+            variant_mask, variant_otsu = otsu(variant_image, mode)
+            variant_stats = histogram_data(variant_image, "gray")["channels"]["Intensity"]
+            experiment[key] = {
+                "image": image_data_url(thumbnail(variant_image)),
+                "histogram": variant_stats["histogram"],
+                "stats": {name: variant_stats[name] for name in
+                          ("min", "max", "mean", "median", "std", "dynamic_range", "entropy", "contrast")},
+                "mask": image_data_url(thumbnail(variant_mask)),
+                "otsu": {name: variant_otsu[name] for name in
+                         ("threshold", "between_class_variance", "foreground_ratio", "background_ratio", "degenerate")},
+            }
         data = {
             "info": image_info(original, upload.filename, len(raw), detect_image_format(raw)), "method": method, "params": used_params,
             "mode": mode, "morphology": morph_args,
@@ -84,6 +100,7 @@ def analyze():
             "histograms_before": source_hist, "histograms_after": result_hist,
             "equalization": equalization,
             "variants": variants,
+            "experimental_comparison": experiment,
             "comparison": compare_metrics(source_hist["gray"]["channels"]["Intensity"], result_hist["gray"]["channels"]["Intensity"], source_otsu["threshold"], result_otsu["threshold"]),
             "warnings": (["Ảnh đồng nhất hoặc mask chỉ có tiền cảnh/hậu cảnh; kết quả Otsu có thể không hữu ích cho phân đoạn."] if source_otsu["degenerate"] or result_otsu["degenerate"] else []) + (["Kênh alpha được ghép trên nền trắng khi phân tích; ảnh tăng cường xuất ra không có độ trong suốt."] if original.ndim == 3 and original.shape[2] == 4 else []),
         }
